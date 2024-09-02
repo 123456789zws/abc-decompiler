@@ -31,6 +31,7 @@ import jadx.core.dex.instructions.ArithNode;
 import jadx.core.dex.instructions.ArithOp;
 import jadx.core.dex.instructions.BaseInvokeNode;
 import jadx.core.dex.instructions.ConstClassNode;
+import jadx.core.dex.instructions.ConstIntNode;
 import jadx.core.dex.instructions.ConstStringNode;
 import jadx.core.dex.instructions.FillArrayInsn;
 import jadx.core.dex.instructions.FilledNewArrayNode;
@@ -74,6 +75,7 @@ public class InsnGen {
 	protected final MethodNode mth;
 	protected final RootNode root;
 	protected final boolean fallback;
+	protected final SpecialMethodGen specialMethodGen;
 
 	protected enum Flags {
 		BODY_ONLY,
@@ -86,6 +88,7 @@ public class InsnGen {
 		this.mth = mgen.getMethodNode();
 		this.root = mth.root();
 		this.fallback = fallback;
+		this.specialMethodGen = new SpecialMethodGen();
 	}
 
 	private boolean isFallback() {
@@ -106,6 +109,27 @@ public class InsnGen {
 
 	public void addArg(ICodeWriter code, InsnArg arg, boolean wrap) throws CodegenException {
 		addArg(code, arg, wrap ? BODY_ONLY_FLAG : BODY_ONLY_NOWRAP_FLAGS);
+	}
+
+	public void addStrArg(ICodeWriter code, InsnArg arg) throws CodegenException {
+		if (arg.isLiteral()) {
+			LiteralArg litArg = (LiteralArg) arg;
+			String literalStr = lit(litArg);
+			code.add(literalStr);
+			return;
+		}
+
+		if (arg.isInsnWrap()) {
+			InsnNode wrapInsn = ((InsnWrapArg) arg).getWrapInsn();
+			switch (wrapInsn.getType()) {
+				case CONST_STR:
+					String str = ((ConstStringNode) wrapInsn).getString();
+					code.add(str);
+					return;
+			}
+		}
+
+		throw new CodegenException("addStrArg Unknown arg type " + arg);
 	}
 
 	public void addArg(ICodeWriter code, InsnArg arg, Set<Flags> flags) throws CodegenException {
@@ -163,8 +187,9 @@ public class InsnGen {
 		if (codeVar.isFinal()) {
 			code.add("final ");
 		}
-		useType(code, codeVar.getType());
-		code.add(' ');
+		if (useType(code, codeVar.getType())) {
+			code.add(' ');
+		}
 		defVar(code, codeVar);
 	}
 
@@ -265,8 +290,12 @@ public class InsnGen {
 		mgen.getClassGen().useClass(code, cls);
 	}
 
-	protected void useType(ICodeWriter code, ArgType type) {
-		mgen.getClassGen().useType(code, type);
+	protected boolean useType(ICodeWriter code, ArgType type) {
+		if (type == null) {
+			return false;
+		}
+
+		return mgen.getClassGen().useType(code, type);
 	}
 
 	public void makeInsn(InsnNode insn, ICodeWriter code) throws CodegenException {
@@ -313,15 +342,26 @@ public class InsnGen {
 
 	private void makeInsnBody(ICodeWriter code, InsnNode insn, Set<Flags> state) throws CodegenException {
 		switch (insn.getType()) {
-			case CONST_STR:
-				String str = ((ConstStringNode) insn).getString();
-				code.add(mth.root().getStringUtils().unescapeString(str));
+			case CONST_STR: {
+				ConstStringNode csn = (ConstStringNode) insn;
+				String str = csn.getString();
+
+				if (csn.isNeedUnescape()) {
+					code.add(mth.root().getStringUtils().unescapeString(str));
+				} else {
+					code.add(str);
+				}
+				break;
+
+			}
+			case CONST_INT:
+				code.add(String.format("%d", ((ConstIntNode) insn).getNumber()));
 				break;
 
 			case CONST_CLASS:
 				ArgType clsType = ((ConstClassNode) insn).getClsType();
 				useType(code, clsType);
-				code.add(".class");
+				// code.add(".class");
 				break;
 
 			case CONST:
@@ -335,17 +375,17 @@ public class InsnGen {
 
 			case CHECK_CAST:
 			case CAST: {
-				boolean wrap = state.contains(Flags.BODY_ONLY);
-				if (wrap) {
-					code.add('(');
-				}
-				code.add('(');
-				useType(code, (ArgType) ((IndexInsnNode) insn).getIndex());
-				code.add(") ");
+				// boolean wrap = state.contains(Flags.BODY_ONLY);
+				// if (wrap) {
+				// code.add('(');
+				// }
+				// code.add('(');
+				// useType(code, (ArgType) ((IndexInsnNode) insn).getIndex());
+				// code.add(") ");
 				addArg(code, insn.getArg(0), true);
-				if (wrap) {
-					code.add(')');
-				}
+				// if (wrap) {
+				// code.add(')');
+				// }
 				break;
 			}
 
@@ -389,10 +429,49 @@ public class InsnGen {
 				break;
 
 			case CMP_L:
+				code.add('(');
+				addArg(code, insn.getArg(0));
+				code.add(" < ");
+				addArg(code, insn.getArg(1));
+				code.add(" ? 1 : 0)");
+				break;
+
 			case CMP_G:
 				code.add('(');
 				addArg(code, insn.getArg(0));
 				code.add(" > ");
+				addArg(code, insn.getArg(1));
+				code.add(" ? 1 : 0)");
+				break;
+
+			case CMP_EQ:
+				code.add('(');
+				addArg(code, insn.getArg(0));
+				code.add(" == ");
+				addArg(code, insn.getArg(1));
+				code.add(" ? 1 : 0)");
+				break;
+
+			case CMP_NE:
+				code.add('(');
+				addArg(code, insn.getArg(0));
+				code.add(" != ");
+				addArg(code, insn.getArg(1));
+				code.add(" ? 1 : 0)");
+				break;
+
+			case CMP_GE:
+				code.add('(');
+				addArg(code, insn.getArg(0));
+				code.add(" >= ");
+				addArg(code, insn.getArg(1));
+				code.add(" ? 1 : 0)");
+				break;
+
+			case CMP_LE:
+				code.add('(');
+				addArg(code, insn.getArg(0));
+				code.add(" <= ");
 				addArg(code, insn.getArg(1));
 				code.add(" ? 1 : 0)");
 				break;
@@ -420,8 +499,8 @@ public class InsnGen {
 
 			case NEW_ARRAY: {
 				ArgType arrayType = ((NewArrayNode) insn).getArrayType();
-				code.add("new ");
-				useType(code, arrayType.getArrayRootElement());
+				// code.add("new ");
+				// useType(code, arrayType.getArrayRootElement());
 				int k = 0;
 				int argsCount = insn.getArgsCount();
 				for (; k < argsCount; k++) {
@@ -857,14 +936,19 @@ public class InsnGen {
 				break;
 
 			case STATIC:
-				ClassInfo insnCls = mth.getParentClass().getClassInfo();
-				ClassInfo declClass = callMth.getDeclClass();
-				if (!insnCls.equals(declClass)) {
-					useClass(code, declClass);
-					code.add('.');
-				}
+				// ClassInfo insnCls = mth.getParentClass().getClassInfo();
+				// ClassInfo declClass = callMth.getDeclClass();
+				// if (!insnCls.equals(declClass)) {
+				// useClass(code, declClass);
+				// code.add('.');
+				// }
 				break;
 		}
+
+		if (specialMethodGen.processMethod(this, insn, code, callMthNode)) {
+			return;
+		}
+
 		if (callMthNode != null) {
 			code.attachAnnotation(callMthNode);
 		}
